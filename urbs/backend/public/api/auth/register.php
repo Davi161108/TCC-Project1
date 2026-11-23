@@ -1,26 +1,20 @@
-
 <?php
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/../../../config/database.php';
 
-// Função para padronizar as respostas da API
 function response(int $status, array $data): void
 {
     http_response_code($status);
-
-    echo json_encode(
-        $data,
-        JSON_UNESCAPED_UNICODE
-    );
-
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// Aceitar somente requisições POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     response(405, [
         'success' => false,
@@ -28,13 +22,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     ]);
 }
 
-// Receber os dados enviados em JSON
-$input = json_decode(
-    file_get_contents('php://input'),
-    true
-);
+$input = json_decode(file_get_contents('php://input'), true);
 
-// Verificar se o JSON é válido
 if (!is_array($input)) {
     response(400, [
         'success' => false,
@@ -42,12 +31,10 @@ if (!is_array($input)) {
     ]);
 }
 
-// Capturar e tratar os campos
 $name = trim($input['name'] ?? '');
 $email = strtolower(trim($input['email'] ?? ''));
 $password = $input['password'] ?? '';
 
-// Validar campos obrigatórios
 if ($name === '' || $email === '' || $password === '') {
     response(400, [
         'success' => false,
@@ -55,7 +42,6 @@ if ($name === '' || $email === '' || $password === '') {
     ]);
 }
 
-// Validar tamanho do nome
 $nameLength = function_exists('mb_strlen')
     ? mb_strlen($name, 'UTF-8')
     : strlen($name);
@@ -67,7 +53,6 @@ if ($nameLength > 120) {
     ]);
 }
 
-// Validar e-mail
 if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
     response(400, [
         'success' => false,
@@ -75,7 +60,6 @@ if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
     ]);
 }
 
-// Validar tamanho do e-mail
 if (strlen($email) > 150) {
     response(400, [
         'success' => false,
@@ -83,7 +67,6 @@ if (strlen($email) > 150) {
     ]);
 }
 
-// Validar senha
 if (strlen($password) < 8) {
     response(400, [
         'success' => false,
@@ -92,20 +75,11 @@ if (strlen($password) < 8) {
 }
 
 try {
+    $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 
-    // Gerar hash seguro da senha
-    $passwordHash = password_hash(
-        $password,
-        PASSWORD_DEFAULT
-    );
-
-    // Preparar a inserção no banco
     $sql = "INSERT INTO users (name, email, password)
             VALUES (:name, :email, :password)";
-
     $stmt = $pdo->prepare($sql);
-
-    // Executar a consulta
     $stmt->execute([
         ':name' => $name,
         ':email' => $email,
@@ -117,9 +91,10 @@ try {
     $_SESSION['user_id'] = $userId;
     $_SESSION['role'] = 'citizen';
     $_SESSION['name'] = $name;
+    $_SESSION['email'] = $email;
     $_SESSION['category_id'] = null;
+    $_SESSION['company_name'] = null;
 
-    // Retornar sucesso
     response(201, [
         'success' => true,
         'message' => 'Usuário cadastrado com sucesso!',
@@ -127,13 +102,12 @@ try {
             'id' => $userId,
             'name' => $name,
             'email' => $email,
-            'role' => 'citizen'
+            'role' => 'citizen',
+            'category_id' => null,
+            'company_name' => null
         ]
     ]);
-
 } catch (PDOException $e) {
-
-    // Verificar se o e-mail já está cadastrado
     if ($e->getCode() === '23000') {
         response(409, [
             'success' => false,
@@ -141,8 +115,7 @@ try {
         ]);
     }
 
-    // Registrar erro internamente
-    error_log('Erro no cadastro CitySense: ' . $e->getMessage());
+    error_log('Erro no cadastro Urbs: ' . $e->getMessage());
 
     response(500, [
         'success' => false,

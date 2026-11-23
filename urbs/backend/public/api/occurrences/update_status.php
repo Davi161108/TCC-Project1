@@ -23,9 +23,8 @@ if (!is_array($input)) {
 }
 $occurrence_id = filter_var($input['occurrence_id'] ?? 0, FILTER_VALIDATE_INT);
 $new_status = $input['status'] ?? '';
-$comment = is_string($input['comment'] ?? null)
-    ? trim($input['comment'])
-    : 'Status atualizado pela equipe responsável.';
+$rawComment = is_string($input['comment'] ?? null) ? trim($input['comment']) : '';
+$comment = $rawComment !== '' ? $rawComment : 'Status atualizado pela equipe responsável.';
 
 $valid_statuses = ['pending', 'in_analysis', 'in_progress', 'resolved', 'rejected'];
 

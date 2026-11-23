@@ -59,11 +59,13 @@ try {
     // Renovar o ID da sessão após autenticar para reduzir risco de session fixation.
     session_regenerate_id(true);
 
-    // Salvar dados na sessão
+    // Salvar dados completos na sessão
     $_SESSION['user_id'] = (int) $user['id'];
     $_SESSION['role'] = $user['role'];
     $_SESSION['name'] = $user['name'];
+    $_SESSION['email'] = $email;
     $_SESSION['category_id'] = $user['category_id'] ? (int) $user['category_id'] : null;
+    $_SESSION['company_name'] = $user['company_name'] ?: null;
 
     response(200, [
         'success' => true,
@@ -71,9 +73,10 @@ try {
         'user' => [
             'id' => (int) $user['id'],
             'name' => $user['name'],
+            'email' => $email,
             'role' => $user['role'],
             'category_id' => $_SESSION['category_id'],
-            'company_name' => $user['company_name']
+            'company_name' => $_SESSION['company_name']
         ]
     ]);
 

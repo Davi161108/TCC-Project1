@@ -18,7 +18,9 @@ echo json_encode([
     'user' => [
         'id' => (int) $_SESSION['user_id'],
         'name' => $_SESSION['name'] ?? '',
+        'email' => $_SESSION['email'] ?? '',
         'role' => $_SESSION['role'] ?? 'citizen',
-        'category_id' => isset($_SESSION['category_id']) ? (int) $_SESSION['category_id'] : null
+        'category_id' => isset($_SESSION['category_id']) ? (int) $_SESSION['category_id'] : null,
+        'company_name' => $_SESSION['company_name'] ?? null
     ]
 ], JSON_UNESCAPED_UNICODE);

@@ -149,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         wrapper.append(makeElement("span", "popup-meta", `${report.address || "Localização marcada no mapa"} · ${data.formatDate(report.createdAt)} · ${report.status}`));
         if (report.demo)
             wrapper.append(makeElement("span", "demo-badge", "EXEMPLO FICTÍCIO"));
-        else if (data.canEdit(report))
+        else if (data.canEdit(report) || data.canDelete(report))
             wrapper.append(makeReportActions(report));
         return wrapper;
     }
@@ -183,7 +183,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const focusTarget = isMobile.matches && explorer?.dataset.expanded === "false" ? explorerToggle : locationFilter;
             focusTarget?.focus({ preventScroll: true });
         });
-        if (data.currentUser?.role === "master" || report.userId === Number(data.currentUser?.id))
+        if (data.canDelete(report))
             actions.append(remove);
         return actions;
     }
@@ -228,13 +228,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const meta = makeElement("div", "report-card-meta");
         meta.textContent = report.address || "Ponto marcado no mapa";
         card.append(meta);
-        if (!report.demo && data.canEdit(report)) {
+        if (!report.demo && (data.canEdit(report) || data.canDelete(report))) {
             const actions = makeReportActions(report);
             card.append(actions);
         }
-        if (!report.demo && data.canManageStatus())
+        if (!report.demo && data.canManageStatus(report))
             card.append(makeStatusSelect(report));
-        return card;
     }
     function makePin(appearance, status, demo) {
         const pin = makeElement("span", demo ? "map-v19-pin map-v19-demo-pin" : "map-v19-pin");
