@@ -81,9 +81,9 @@
     if (ended) return;
     ended = true;
     try {
-      sessionStorage.setItem('urbs-home-arrival-v9', String(Date.now()));
+      sessionStorage.setItem('urbs-arrival-v8', String(Date.now()));
     } catch (_) { }
-    window.location.assign('index.html');
+    window.location.assign('mapa.html');
   }
 
   function setCaption(name, label) {

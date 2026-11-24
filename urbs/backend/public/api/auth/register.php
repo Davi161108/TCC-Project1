@@ -87,13 +87,6 @@ try {
     ]);
 
     $userId = (int) $pdo->lastInsertId();
-    session_regenerate_id(true);
-    $_SESSION['user_id'] = $userId;
-    $_SESSION['role'] = 'citizen';
-    $_SESSION['name'] = $name;
-    $_SESSION['email'] = $email;
-    $_SESSION['category_id'] = null;
-    $_SESSION['company_name'] = null;
 
     response(201, [
         'success' => true,

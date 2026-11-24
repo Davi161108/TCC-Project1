@@ -1,405 +1,796 @@
-/* URBS V6 — Globo satélite real, inspirado na experiência de navegação Earth.
- * CesiumJS + Esri World Imagery, sem copiar imagens/código do Google Earth.
- * Mantenha as atribuições do provedor visíveis na cena.
- * Login e cadastro usam a API PHP do projeto.
- */
+/* URBS — Globo Terrestre Fotorrealista (Custom GLSL Shader + Texturas Locais) + Autenticação PHP */
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js';
+
 (() => {
-    'use strict';
-    const root = document.querySelector('.auth-experience');
-    if (!root)
+  'use strict';
+
+  const stage = document.getElementById('app');
+  const canvas = document.getElementById('earth-canvas');
+  if (!stage || !canvas) return;
+
+  const gsap = window.gsap;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const loginSide = document.getElementById('login-side');
+  const registerSide = document.getElementById('register-side');
+  const toastEl = document.getElementById('auth-toast');
+  const diveVeil = document.getElementById('dive-veil');
+  const diveHud = document.getElementById('dive-hud');
+  const divePhase = document.getElementById('dive-phase');
+  const diveAlt = document.getElementById('dive-alt');
+  const cursorDepth = document.getElementById('cursor-depth');
+  const srStatus = document.getElementById('sr-status');
+
+  const ROLE_LABELS = { citizen: 'Cidadão', resolver: 'Empresa', master: 'Master' };
+  const MOC_LAT = -16.7286;
+  const MOC_LON = -43.8582;
+
+  let mode = 'login';
+  let switching = false;
+  let diving = false;
+
+  // Objetos Three.js
+  let scene, camera, renderer, earthGroup, earthMesh, cloudsMesh, cloudsMat, beaconGroup;
+  let starLayers = [];
+  let raycaster, mouseNDC;
+  let autoRotate = true;
+  let isDragging = false;
+  let prevMouse = { x: 0, y: 0 };
+  let velocity = { x: 0, y: 0 };
+  let parallax = { x: 0, y: 0 };
+  let isHoveringEarth = false;
+  let diveWarpSpeed = 0;
+
+  const isDesktop = () => window.innerWidth > 860;
+  const earthOffsetX = () => (isDesktop() ? 1.18 : 0);
+
+  // ================= TOAST & CONTAS SALVAS =================
+  function showToast(message) {
+    if (!toastEl) return;
+    toastEl.textContent = message;
+    toastEl.hidden = false;
+    window.clearTimeout(toastEl._timer);
+    toastEl._timer = window.setTimeout(() => {
+      toastEl.hidden = true;
+    }, 3800);
+  }
+
+  function saveAccount(user, emailUsed) {
+    if (!user || !user.id) return;
+    try {
+      const key = 'urbs:saved_accounts';
+      const list = JSON.parse(localStorage.getItem(key) || '[]');
+      const entry = {
+        id: Number(user.id),
+        name: user.name || 'Usuário',
+        email: emailUsed || user.email || '',
+        role: user.role || 'citizen',
+        company_name: user.company_name || null
+      };
+      const idx = list.findIndex(item => item.id === entry.id || (entry.email && item.email === entry.email));
+      if (idx >= 0) list[idx] = entry;
+      else list.unshift(entry);
+      localStorage.setItem(key, JSON.stringify(list.slice(0, 6)));
+    } catch (_) {}
+  }
+
+  function renderSavedAccounts() {
+    const box = document.getElementById('saved-accounts');
+    const listEl = document.getElementById('saved-accounts-list');
+    if (!box || !listEl) return;
+
+    let accounts = [];
+    try { accounts = JSON.parse(localStorage.getItem('urbs:saved_accounts') || '[]'); } catch (_) {}
+
+    if (!accounts.length) {
+      box.hidden = true;
+      return;
+    }
+
+    box.hidden = false;
+    listEl.replaceChildren();
+    accounts.forEach(acc => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'saved-pill';
+      const first = (acc.name || 'Conta').split(' ')[0];
+      const tag = acc.role === 'resolver' && acc.company_name ? acc.company_name : (ROLE_LABELS[acc.role] || acc.role);
+      btn.textContent = `${first} · ${tag}`;
+      btn.title = acc.email;
+      btn.addEventListener('click', () => {
+        const emailInput = document.getElementById('login-email');
+        const passInput = document.getElementById('login-password');
+        if (emailInput) emailInput.value = acc.email || '';
+        if (passInput) { passInput.value = ''; passInput.focus(); }
+        showToast(`Conta ${first} selecionada. Digite sua senha para entrar.`);
+      });
+      listEl.append(btn);
+    });
+  }
+
+  // ================= MOTOR 3D PLANETÁRIO (CUSTOM GLSL) =================
+  function latLonToVec3(lat, lon, radius) {
+    const phi = (90 - lat) * (Math.PI / 180);
+    const theta = (lon + 180) * (Math.PI / 180);
+    return new THREE.Vector3(
+      -(radius * Math.sin(phi) * Math.cos(theta)),
+      radius * Math.cos(phi),
+      radius * Math.sin(phi) * Math.sin(theta)
+    );
+  }
+
+  function createStarSprite() {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    g.addColorStop(0.2, 'rgba(232, 244, 255, 0.8)');
+    g.addColorStop(0.5, 'rgba(170, 205, 255, 0.14)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
+
+  function createStarLayer(count, spread, size, opacity, colorHex, sprite) {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * spread * 2;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * spread * 1.4;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * spread * 2 - 12;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      color: colorHex,
+      size,
+      map: sprite,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    return new THREE.Points(geo, mat);
+  }
+
+  function initEarth3D() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.05, 220);
+    camera.position.set(0, 0, 13.5);
+
+    renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      powerPreference: 'high-performance'
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+
+    raycaster = new THREE.Raycaster();
+    mouseNDC = new THREE.Vector2();
+
+    // Direção do Sol fixa no espaço (cria terminador realista dia/crepusculo/noite)
+    const sunDir = new THREE.Vector3(0.88, 0.24, 0.62).normalize();
+
+    earthGroup = new THREE.Group();
+    earthGroup.rotation.order = 'XYZ';
+    scene.add(earthGroup);
+
+    const loader = new THREE.TextureLoader();
+    const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+    const dayTex = loader.load('assets/textures/earth-day.jpg');
+    dayTex.colorSpace = THREE.SRGBColorSpace;
+    dayTex.anisotropy = maxAniso;
+
+    const nightTex = loader.load('assets/textures/earth-night-illustrative.jpg');
+    nightTex.colorSpace = THREE.SRGBColorSpace;
+    nightTex.anisotropy = maxAniso;
+
+    const reliefTex = loader.load('assets/textures/earth-relief.jpg');
+    reliefTex.anisotropy = maxAniso;
+
+    const oceanMaskTex = loader.load('assets/textures/ocean-mask.png');
+    oceanMaskTex.anisotropy = maxAniso;
+
+    const cloudsTex = loader.load('assets/textures/earth-clouds.png');
+    cloudsTex.anisotropy = maxAniso;
+
+    // 1. SUPERFÍCIE DA TERRA — Shader GLSL fotorrealista (Dia, Noite com cidades, Relevo, Brilho Oceânico, Rayleigh)
+    const earthGeo = new THREE.SphereGeometry(1.52, 112, 112);
+    const earthMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uDayMap: { value: dayTex },
+        uNightMap: { value: nightTex },
+        uReliefMap: { value: reliefTex },
+        uOceanMask: { value: oceanMaskTex },
+        uSunDir: { value: sunDir }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPos;
+        void main() {
+          vUv = uv;
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPos.xyz;
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uDayMap;
+        uniform sampler2D uNightMap;
+        uniform sampler2D uReliefMap;
+        uniform sampler2D uOceanMask;
+        uniform vec3 uSunDir;
+
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPos;
+
+        void main() {
+          vec3 N = normalize(vWorldNormal);
+          vec3 V = normalize(cameraPosition - vWorldPos);
+          vec3 L = normalize(uSunDir);
+
+          float ocean = smoothstep(0.2, 0.8, texture2D(uOceanMask, vUv).r);
+
+          // Perturbação sutil de relevo topográfico apenas nos continentes
+          float hL = texture2D(uReliefMap, vUv - vec2(0.001, 0.0)).r;
+          float hR = texture2D(uReliefMap, vUv + vec2(0.001, 0.0)).r;
+          float hD = texture2D(uReliefMap, vUv - vec2(0.0, 0.002)).r;
+          float hU = texture2D(uReliefMap, vUv + vec2(0.0, 0.002)).r;
+
+          vec3 upRef = abs(N.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+          vec3 T = normalize(cross(upRef, N));
+          vec3 B = normalize(cross(N, T));
+          vec3 landN = normalize(N + ((hL - hR) * T + (hD - hU) * B) * 1.65 * (1.0 - ocean));
+
+          float rawDot = dot(N, L);
+          float litDot = max(dot(landN, L), 0.0);
+
+          // Curvas suaves de dia, crepúsculo e noite
+          float dayMix = smoothstep(-0.14, 0.24, rawDot);
+          float nightMix = 1.0 - smoothstep(-0.22, 0.06, rawDot);
+          float twilight = exp(-pow((rawDot + 0.015) * 8.5, 2.0));
+
+          vec3 dayColor = texture2D(uDayMap, vUv).rgb;
+          vec3 nightLights = texture2D(uNightMap, vUv).rgb;
+
+          // Iluminação difusa natural com leve luz ambiente do espaço
+          vec3 litSurface = dayColor * (0.045 + pow(litDot, 0.88) * 1.18);
+
+          // Reflexo solar realista restrito aos oceanos (Fresnel + brilho suave + núcleo solar)
+          vec3 H = normalize(L + V);
+          float NdotH = max(dot(N, H), 0.0);
+          float fresnelWater = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 4.0);
+          float sunGlint = (pow(NdotH, 92.0) * 0.62 + pow(NdotH, 16.0) * 0.16) * fresnelWater;
+          litSurface += vec3(0.95, 0.97, 1.0) * sunGlint * ocean * smoothstep(0.0, 0.22, rawDot);
+
+          // Luzes urbanas quentes na face noturna + leve tom de crepúsculo no horizonte
+          vec3 darkSurface = dayColor * 0.025 + nightLights * vec3(1.35, 0.95, 0.55) * 0.85 * nightMix;
+          vec3 color = mix(darkSurface, litSurface, dayMix);
+          color += vec3(0.55, 0.22, 0.08) * twilight * 0.16 * (1.0 - ocean * 0.4);
+
+          // Dispersão atmosférica Rayleigh nas bordas iluminadas do planeta
+          float limb = pow(1.0 - max(dot(N, V), 0.0), 3.1);
+          float sunFacing = smoothstep(-0.28, 0.45, rawDot);
+          color += vec3(0.30, 0.62, 0.98) * limb * (0.07 + 0.68 * sunFacing);
+
+          gl_FragColor = vec4(color, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }
+      `
+    });
+    earthMesh = new THREE.Mesh(earthGeo, earthMat);
+    earthGroup.add(earthMesh);
+
+    // 2. CAMADA DE NUVENS REAIS — Iluminadas no lado do dia e sombreadas na noite
+    const cloudsGeo = new THREE.SphereGeometry(1.544, 80, 80);
+    cloudsMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uCloudsMap: { value: cloudsTex },
+        uSunDir: { value: sunDir },
+        uOpacity: { value: 0.52 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        void main() {
+          vUv = uv;
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uCloudsMap;
+        uniform vec3 uSunDir;
+        uniform float uOpacity;
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        void main() {
+          float cloud = texture2D(uCloudsMap, vUv).r;
+          float sunLit = smoothstep(-0.18, 0.35, dot(normalize(vWorldNormal), normalize(uSunDir)));
+          vec3 cloudCol = mix(vec3(0.03, 0.06, 0.11), vec3(0.96, 0.98, 1.0), sunLit);
+          float alpha = cloud * uOpacity * (0.14 + 0.86 * sunLit);
+          gl_FragColor = vec4(cloudCol, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false
+    });
+    cloudsMesh = new THREE.Mesh(cloudsGeo, cloudsMat);
+    earthGroup.add(cloudsMesh);
+
+    // 3. HALO ATMOSFÉRICO CRESCENTE (BackSide — acompanha a luz solar, sem brilho artificial uniforme)
+    const atmosGeo = new THREE.SphereGeometry(1.66, 72, 72);
+    const atmosMat = new THREE.ShaderMaterial({
+      uniforms: { uSunDir: { value: sunDir } },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+        varying vec3 vViewNormal;
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vViewNormal = normalize(normalMatrix * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uSunDir;
+        varying vec3 vWorldNormal;
+        varying vec3 vViewNormal;
+        void main() {
+          float edge = pow(clamp(0.58 - dot(vViewNormal, vec3(0.0, 0.0, 1.0)), 0.0, 1.0), 3.4);
+          float sunSide = smoothstep(-0.35, 0.55, dot(normalize(vWorldNormal), normalize(uSunDir)));
+          vec3 halo = vec3(0.28, 0.62, 1.0) * edge * (0.06 + 0.85 * sunSide);
+          gl_FragColor = vec4(halo, 1.0);
+        }
+      `,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      transparent: true,
+      depthWrite: false
+    });
+    earthGroup.add(new THREE.Mesh(atmosGeo, atmosMat));
+
+    // 4. Ponto discreto de Montes Claros - MG (-16.7286, -43.8582)
+    const mocPos = latLonToVec3(MOC_LAT, MOC_LON, 1.532);
+    beaconGroup = new THREE.Group();
+    beaconGroup.position.copy(mocPos);
+    beaconGroup.lookAt(mocPos.clone().multiplyScalar(2));
+
+    const dot = new THREE.Mesh(
+      new THREE.CircleGeometry(0.017, 24),
+      new THREE.MeshBasicMaterial({ color: 0xc7f36b, side: THREE.DoubleSide })
+    );
+    const pulseRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.025, 0.035, 32),
+      new THREE.MeshBasicMaterial({ color: 0xc7f36b, transparent: true, opacity: 0.65, side: THREE.DoubleSide })
+    );
+    beaconGroup.add(dot, pulseRing);
+    beaconGroup.userData.pulse = pulseRing;
+    earthGroup.add(beaconGroup);
+
+    // 5. Estrelas em 3 temperaturas e profundidades
+    const sprite = createStarSprite();
+    const sFar = createStarLayer(1600, 68, 0.22, 0.5, 0xcbd5e1, sprite);
+    const sMid = createStarLayer(650, 46, 0.34, 0.78, 0xdbeafe, sprite);
+    const sNear = createStarLayer(180, 30, 0.42, 0.88, 0xfef3c7, sprite);
+    starLayers = [sFar, sMid, sNear];
+    scene.add(sFar, sMid, sNear);
+
+    // Enquadramento inicial elegante com América do Sul / Atlântico em destaque
+    earthGroup.rotation.set(-0.22, -1.08, 0);
+
+    bindGlobeInteractions();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      if (!diving && !switching) {
+        earthGroup.position.x = mode === 'login' ? -earthOffsetX() : earthOffsetX();
+        camera.position.z = isDesktop() ? 4.45 : 5.5;
+      }
+    });
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const t = clock.elapsedTime;
+
+      if (earthGroup) {
+        if (autoRotate && !isDragging && !switching && !diving) {
+          earthGroup.rotation.y += 0.065 * dt;
+        }
+        if (!isDragging && !diving) {
+          earthGroup.rotation.y += velocity.y;
+          earthGroup.rotation.x = Math.max(-0.75, Math.min(0.75, earthGroup.rotation.x + velocity.x));
+          velocity.x *= 0.92;
+          velocity.y *= 0.92;
+        }
+      }
+
+      if (cloudsMesh) cloudsMesh.rotation.y += 0.018 * dt;
+
+      if (beaconGroup?.userData.pulse) {
+        const s = 1 + 0.75 * ((Math.sin(t * 2.6) + 1) * 0.5);
+        beaconGroup.userData.pulse.scale.setScalar(s);
+        beaconGroup.userData.pulse.material.opacity = Math.max(0, 0.8 - (s - 1) * 0.95);
+      }
+
+      // Movimento contínuo das estrelas + efeito warp durante o mergulho orbital
+      starLayers.forEach((layer, idx) => {
+        const factor = idx + 1;
+        layer.rotation.y -= 0.008 * factor * dt;
+        layer.position.x += (parallax.x * 0.25 * factor - layer.position.x) * 0.04;
+        layer.position.y += (parallax.y * 0.18 * factor - layer.position.y) * 0.04;
+
+        if (diveWarpSpeed > 0.01) {
+          const arr = layer.geometry.attributes.position.array;
+          for (let i = 2; i < arr.length; i += 3) {
+            arr[i] += diveWarpSpeed * factor * dt;
+            if (arr[i] > camera.position.z + 2) arr[i] -= 85;
+          }
+          layer.geometry.attributes.position.needsUpdate = true;
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  }
+
+  function bindGlobeInteractions() {
+    window.addEventListener('pointermove', (e) => {
+      if (cursorDepth) {
+        cursorDepth.style.left = `${e.clientX}px`;
+        cursorDepth.style.top = `${e.clientY}px`;
+      }
+
+      mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      parallax.x = mouseNDC.x;
+      parallax.y = mouseNDC.y;
+
+      if (isDragging && earthGroup && !diving) {
+        const dx = e.clientX - prevMouse.x;
+        const dy = e.clientY - prevMouse.y;
+        velocity.y = dx * 0.005;
+        velocity.x = dy * 0.003;
+        earthGroup.rotation.y += velocity.y;
+        earthGroup.rotation.x = Math.max(-0.75, Math.min(0.75, earthGroup.rotation.x + velocity.x));
+        prevMouse = { x: e.clientX, y: e.clientY };
         return;
-    const C = window.Cesium;
-    const gsap = window.gsap;
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const host = document.getElementById('planet-canvas');
-    const status = document.querySelector('.screen-reader-status');
-    const planetZone = document.querySelector('.planet-zone');
-    const loginSide = document.getElementById('login-side');
-    const registerSide = document.getElementById('register-side');
-    const WORLD_IMAGERY = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer';
-    let mode = 'login', entering = false, viewer = null, raf = 0, lastTime = 0;
-    let pointerX = 0, pointerY = 0, panX = 0, panY = 0, switching = false;
-    let dragging = false, dragX = 0, dragY = 0, lastDrag = 0;
-    const globe = { rotation: { y: 0 } }; // Proxy animável pelo GSAP; vira longitude da câmera Cesium.
-    const initialCenter = { lon: 23, lat: 15 }; // África e Oriente Médio.
-    function fallback(message) {
-        host?.classList.add('globe-fallback');
-        if (status)
-            status.textContent = message || 'Globo de satélite indisponível; formulários disponíveis.';
-    }
-    function resizeGlobe() {
-        if (!viewer)
-            return;
-        const touch = matchMedia('(pointer: coarse)').matches;
-        const pixels = Math.max(1, host.clientWidth * host.clientHeight);
-        const ratio = window.devicePixelRatio || 1;
-        const pixelBudget = touch ? 1800000 : 3800000;
-        const targetRatio = touch ? Math.min(ratio, 1.7) : Math.min(ratio * 1.3, 2);
-        viewer.resolutionScale = Math.min(targetRatio, Math.sqrt(pixelBudget / pixels)) / ratio;
-        globeCamera();
-    }
-    function globeCamera() {
-        if (!viewer || viewer.isDestroyed() || entering)
-            return;
-        const mobile = innerWidth <= 760;
-        const lon = initialCenter.lon + C.Math.toDegrees(globe.rotation.y) + panX * 2.0;
-        const lat = initialCenter.lat + panY * 1.3;
-        // Câmera acima do centro geográfico da Terra. O movimento da longitude
-        // equivale à rotação do planeta, preservando relevo e geografia reais.
-        const height = mobile ? 15200000 : 13100000;
-        viewer.camera.setView({
-            destination: C.Cartesian3.fromDegrees(lon, lat, height),
-            orientation: { heading: 0, pitch: -C.Math.PI_OVER_TWO, roll: 0 }
-        });
-    }
-    async function loadGlobeImagery(currentViewer) {
-        const addLayer = (provider, index) => {
-            if (!currentViewer.isDestroyed())
-                currentViewer.imageryLayers.addImageryProvider(provider, index);
-        };
-        // O mosaico local aparece enquanto o satélite carrega e cobre falhas de rede.
-        const results = await Promise.allSettled([
-            C.SingleTileImageryProvider.fromUrl('assets/textures/earth-day.jpg', {
-                credit: 'NASA / Earth Observatory · Blue Marble'
-            }).then(provider => addLayer(provider, 0)),
-            C.ArcGisMapServerImageryProvider.fromUrl(WORLD_IMAGERY, {
-                enablePickFeatures: false
-            }).then(provider => addLayer(provider))
-        ]);
-        if (results.every(result => result.status === 'rejected') && viewer === currentViewer) {
-            currentViewer.destroy();
-            viewer = null;
-            fallback();
-        }
-    }
-    async function addOceanReflection(currentViewer) {
-        const mask = new Image();
-        mask.src = 'assets/textures/ocean-mask.png';
-        try {
-            await mask.decode();
-        }
-        catch {
-            return;
-        }
-        if (currentViewer.isDestroyed())
-            return;
+      }
 
-        // A direção da luz acompanha a câmera, inclusive no lado oposto do globo.
-        const material = new C.Material({
-            fabric: {
-                uniforms: { oceanMask: mask, reflectionStrength: 0 },
-                source: `
-                    czm_material czm_getMaterial(czm_materialInput inputData) {
-                        czm_material material = czm_getDefaultMaterial(inputData);
-                        vec3 worldPosition = (czm_inverseView3D * vec4(-inputData.positionToEyeEC, 1.0)).xyz;
-                        vec3 surface = normalize(worldPosition * vec3(1.0, 1.0, 1.0067395));
-                        vec2 uv = vec2(atan(surface.y, surface.x) / czm_twoPi + .5, asin(clamp(surface.z, -1.0, 1.0)) / czm_pi + .5);
-                        float water = smoothstep(.2, .8, texture(oceanMask, uv).r);
-
-                        vec3 sun = normalize(czm_inverseViewRotation3D * vec3(-.99, -.12, .045));
-                        vec3 eye = normalize(czm_inverseViewRotation3D * inputData.positionToEyeEC);
-                        vec3 halfAngle = normalize(sun + eye);
-                        float alignment = max(dot(surface, halfAngle), 0.0);
-                        float facing = max(dot(surface, eye), 0.0);
-                        float daylight = smoothstep(0.0, .22, dot(surface, sun));
-
-                        vec3 east = normalize(vec3(-surface.y, surface.x, .0001));
-                        vec3 north = normalize(cross(surface, east));
-                        float eastOffset = dot(east, halfAngle);
-                        float crossSpread = eastOffset * eastOffset;
-                        float body = pow(alignment, 53.0) * exp(-12.0 * crossSpread);
-                        float halo = pow(alignment, 12.0) * exp(-4.0 * crossSpread);
-
-                        // As ondas alteram a orientação da água. Suavize o detalhe subpixel.
-                        vec3 waves = vec3(
-                            dot(surface, vec3(122.0, -78.0, 248.0)),
-                            dot(surface, vec3(68.0, 123.0, 171.0)),
-                            dot(surface, vec3(181.0, 61.0, -94.0))
-                        );
-                        vec3 footprint = fwidth(waves);
-                        float detail = 1.0 - smoothstep(.5, 1.55, max(footprint.x, max(footprint.y, footprint.z)));
-                        float eastWave = .023 * sin(waves.x + .8 * sin(waves.y)) + .012 * cos(waves.z);
-                        float northWave = .018 * sin(waves.y + .7 * cos(waves.z)) + .010 * cos(waves.x);
-                        vec3 waveNormal = normalize(surface + detail * (eastWave * east + northWave * north));
-                        float sparkle = pow(max(dot(waveNormal, halfAngle), 0.0), 158.0);
-
-                        // Fresnel da água e compressão gradual dos brilhos mais intensos.
-                        float fresnel = .02 + .98 * pow(1.0 - clamp(dot(eye, halfAngle), 0.0, 1.0), 5.0);
-                        float fresnelGain = min(1.3, .9 + 2.4 * fresnel);
-                        float sheen = .12 * pow(facing, .85);
-                        float energy = sheen + daylight * fresnelGain * (1.20 * sparkle + .62 * body + .28 * halo);
-                        float visible = smoothstep(0.0, .18, facing);
-                        float tint = smoothstep(.03, .65, body + .3 * halo);
-                        material.diffuse = mix(vec3(.48, .66, .85), vec3(1.0, .97, .88), tint);
-                        material.alpha = water * .94 * (1.0 - exp(-reflectionStrength * energy)) * visible;
-                        return material;
-                    }
-                `
-            }
-        });
-        currentViewer.scene.globe.material = material;
-
-        // A textura é enviada à GPU pelo Cesium após o material entrar em uso.
-        let frames = 0;
-        const removeListener = currentViewer.scene.postRender.addEventListener(() => {
-            if (++frames === 2) {
-                material.uniforms.reflectionStrength = 1.0;
-                removeListener();
-            }
-        });
-    }
-    function initGlobe() {
-        if (!C || !host) {
-            fallback();
-            return;
-        }
-        try {
-            // CesiumJS é usado apenas como renderizador. Sem controles ou interface de mapa.
-            // O usuário vê um planeta limpo, preservando créditos de imagem obrigatórios.
-            viewer = new C.Viewer(host, {
-                animation: false, timeline: false, fullscreenButton: false,
-                homeButton: false, navigationHelpButton: false, sceneModePicker: false,
-                baseLayerPicker: false, geocoder: false, infoBox: false,
-                selectionIndicator: false, baseLayer: false,
-                terrainProvider: new C.EllipsoidTerrainProvider(),
-                skyBox: false, sun: false, moon: false,
-                contextOptions: { webgl: { alpha: true } },
-                useBrowserRecommendedResolution: false,
-                msaaSamples: matchMedia('(pointer: coarse)').matches ? 2 : 4,
-                requestRenderMode: false, shouldAnimate: true
+      if (!diving && raycaster && earthMesh) {
+        raycaster.setFromCamera(mouseNDC, camera);
+        const hit = raycaster.intersectObject(earthMesh).length > 0;
+        if (hit !== isHoveringEarth) {
+          isHoveringEarth = hit;
+          canvas.style.cursor = hit ? 'grab' : 'default';
+          if (gsap && earthGroup) {
+            gsap.to(earthGroup.scale, {
+              x: hit ? 1.022 : 1,
+              y: hit ? 1.022 : 1,
+              z: hit ? 1.022 : 1,
+              duration: 0.7,
+              ease: 'power2.out'
             });
-            viewer.scene.globe.enableLighting = false;
-            viewer.scene.globe.show = true;
-            viewer.scene.globe.baseColor = C.Color.fromCssColorString('#123049');
-            viewer.scene.globe.maximumScreenSpaceError = matchMedia('(pointer: coarse)').matches ? 1.6 : 1.15;
-            viewer.scene.backgroundColor = C.Color.TRANSPARENT;
-            viewer.scene.skyAtmosphere.show = true;
-            viewer.scene.fog.enabled = false;
-            viewer.scene.screenSpaceCameraController.enableInputs = false;
-            viewer.scene.globe.showGroundAtmosphere = true;
-            resizeGlobe();
-            window.addEventListener('resize', resizeGlobe);
-            void loadGlobeImagery(viewer);
-            void addOceanReflection(viewer);
-            lastTime = performance.now();
-            function animate(now) {
-                if (!viewer || entering) {
-                    raf = 0;
-                    return;
-                }
-                raf = requestAnimationFrame(animate);
-                const dt = Math.min(.06, (now - lastTime) / 1000 || 0);
-                lastTime = now;
-                if (!switching && !dragging && !reduced && now - lastDrag > 2200)
-                    globe.rotation.y += .014 * dt; // Reinicia ao soltar / ficar inativo.
-                panX += (pointerX - panX) * Math.min(1, dt * 1.6);
-                panY += (pointerY - panY) * Math.min(1, dt * 1.6);
-                globeCamera();
-            }
-            raf = requestAnimationFrame(animate);
-            document.addEventListener('visibilitychange', () => {
-                if (document.hidden) {
-                    cancelAnimationFrame(raf);
-                    raf = 0;
-                }
-                else if (!raf && viewer && !entering) {
-                    lastTime = performance.now();
-                    raf = requestAnimationFrame(animate);
-                }
-            });
-            window.addEventListener('pagehide', event => {
-                if (event.persisted)
-                    return;
-                cancelAnimationFrame(raf);
-                window.removeEventListener('resize', resizeGlobe);
-                if (viewer && !viewer.isDestroyed())
-                    viewer.destroy();
-                viewer = null;
-            });
+          }
         }
-        catch (err) {
-            console.warn('URBS: CesiumJS indisponível.', err);
-            fallback();
-        }
-    }
-    // Arrastar no globo altera a longitude e latitude em tempo real. O globo
-    // retoma sua rotação lenta após 2,2 s sem interação; nenhum controle Cesium interfere.
-    planetZone.addEventListener('pointerdown', e => {
-        if (entering || switching || e.button !== 0 || e.target.closest('.cesium-viewer-bottom'))
-            return;
-        dragging = true;
-        dragX = e.clientX;
-        dragY = e.clientY;
-        lastDrag = performance.now();
-        planetZone.classList.add('is-dragging');
-        try {
-            planetZone.setPointerCapture(e.pointerId);
-        }
-        catch (_) { }
-    });
-    planetZone.addEventListener('pointermove', e => {
-        if (!dragging || entering)
-            return;
-        const dx = e.clientX - dragX, dy = e.clientY - dragY;
-        globe.rotation.y -= dx * .006;
-        panY = Math.max(-26, Math.min(26, panY + dy * .12));
-        pointerY = panY;
-        dragX = e.clientX;
-        dragY = e.clientY;
-        lastDrag = performance.now();
-        globeCamera();
-    });
-    const stopDrag = () => { dragging = false; lastDrag = performance.now(); planetZone.classList.remove('is-dragging'); };
-    planetZone.addEventListener('pointerup', stopDrag);
-    planetZone.addEventListener('pointercancel', stopDrag);
-    planetZone.addEventListener('lostpointercapture', stopDrag);
-    document.addEventListener('pointermove', event => {
-        if (reduced || entering || event.pointerType === 'touch')
-            return;
-        pointerX = (event.clientX / innerWidth - .5) * 2;
-        if (!dragging)
-            pointerY = (event.clientY / innerHeight - .5) * 2;
+      }
     }, { passive: true });
-    // Alternância exatamente em 1,2 s: globo muda de metade + longitude da câmera.
-    function switchMode(next) {
-        if (entering || next === mode || switching)
-            return;
-        const toRegister = next === 'register';
-        const outgoing = toRegister ? loginSide : registerSide;
-        const incoming = toRegister ? registerSide : loginSide;
-        const mobile = matchMedia('(max-width:760px)').matches;
-        mode = next;
-        root.dataset.mode = next;
-        outgoing.inert = true;
-        outgoing.setAttribute('aria-hidden', 'true');
-        incoming.inert = false;
-        incoming.removeAttribute('aria-hidden');
-        incoming.style.pointerEvents = 'auto';
-        outgoing.style.pointerEvents = 'none';
-        const done = () => {
-            incoming.style.visibility = 'visible';
-            incoming.style.opacity = '1';
-            incoming.style.transform = 'translateX(0px)';
-            outgoing.style.visibility = 'hidden';
-            switching = false;
-        };
-        if (!gsap || reduced) {
-            planetZone.style.left = mobile ? '0%' : toRegister ? '0%' : '50%';
-            globe.rotation.y += toRegister ? -1.7 : 1.7;
-            outgoing.style.visibility = 'hidden';
-            outgoing.style.opacity = '0';
-            incoming.style.visibility = 'visible';
-            done();
-            globeCamera();
-        }
-        else {
-            gsap.killTweensOf([planetZone, outgoing, incoming, globe.rotation]);
-            switching = true;
-            const tl = gsap.timeline({ onComplete: done });
-            tl.to(outgoing, { autoAlpha: 0, x: toRegister ? -85 : 85, duration: .48, ease: 'power2.in' }, 0)
-                .set(incoming, { visibility: 'visible', opacity: 0, x: toRegister ? 85 : -85 }, .35)
-                .to(incoming, { autoAlpha: 1, x: 0, duration: .75, ease: 'power3.out' }, .45);
-            if (!mobile)
-                tl.to(planetZone, { left: toRegister ? '0%' : '50%', duration: 1.2, ease: 'power3.inOut' }, 0);
-            tl.to(globe.rotation, { y: globe.rotation.y + (toRegister ? -1.7 : 1.7), duration: 1.2, ease: 'power2.inOut', onUpdate: globeCamera }, 0);
-        }
-        if (status)
-            status.textContent = toRegister ? 'Cadastro à direita. Terra à esquerda.' : 'Login à esquerda. Terra à direita.';
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (diving || switching || e.button !== 0) return;
+      raycaster.setFromCamera(mouseNDC, camera);
+      if (raycaster.intersectObject(earthMesh).length > 0) {
+        isDragging = true;
+        canvas.style.cursor = 'grabbing';
+        prevMouse = { x: e.clientX, y: e.clientY };
+      }
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (isDragging) {
+        isDragging = false;
+        canvas.style.cursor = isHoveringEarth ? 'grab' : 'default';
+      }
+    });
+  }
+
+  // ================= COREOGRAFIAS GSAP =================
+  function playInitialArrival(openRegisterDirectly = false) {
+    const targetZ = isDesktop() ? 4.45 : 5.5;
+    const targetX = openRegisterDirectly ? earthOffsetX() : -earthOffsetX();
+
+    if (openRegisterDirectly) {
+      mode = 'register';
+      stage.dataset.mode = 'register';
+      loginSide.inert = true;
+      loginSide.setAttribute('aria-hidden', 'true');
+      registerSide.inert = false;
+      registerSide.removeAttribute('aria-hidden');
     }
-    document.querySelectorAll('[data-switch]').forEach(btn => btn.addEventListener('click', () => {
-        const next = btn.dataset.switch;
-        switchMode(next);
-        setTimeout(() => document.getElementById(next === 'login' ? 'login-email' : 'register-name')?.focus({ preventScroll: true }), reduced ? 0 : 1250);
-    }));
-    document.querySelectorAll('.show-password').forEach(btn => btn.addEventListener('click', () => {
-        const field = document.getElementById(btn.dataset.target);
-        const show = field.type === 'password';
-        field.type = show ? 'text' : 'password';
-        btn.textContent = show ? 'OCULTAR' : 'MOSTRAR';
-        btn.setAttribute('aria-label', show ? 'Ocultar senha' : 'Mostrar senha');
-    }));
-    async function enterExperience(event) {
-        event.preventDefault();
-        if (entering)
-            return;
-        const form = event.currentTarget, error = form.querySelector('.field-error');
-        error.textContent = '';
-        if (!form.checkValidity()) {
-            const field = form.querySelector(':invalid');
-            error.textContent = field?.validity.typeMismatch ? 'Digite um e-mail válido.' : field?.validity.tooShort ? 'Campo com menos caracteres do que o mínimo exigido.' : 'Preencha todos os campos obrigatórios.';
-            field?.focus();
-            return;
-        }
-        if (form.id === 'register-form') {
-            const pass = document.getElementById('register-password');
-            const confirm = document.getElementById('register-confirm');
-            if (pass.value !== confirm.value) {
-                error.textContent = 'As senhas não coincidem.';
-                confirm.focus();
-                return;
-            }
-        }
-        const button = form.querySelector('.submit-button');
-        const originalLabel = button?.textContent;
-        if (button) {
-            button.disabled = true;
-            button.textContent = 'CONECTANDO…';
-        }
-        document.querySelectorAll('.switch-link').forEach(item => item.disabled = true);
-        try {
-            if (!window.UrbsAPI)
-                throw new Error('A conexão com a API não foi iniciada. Atualize a página.');
-            const register = form.id === 'register-form';
-            const payload = register
-                ? {
-                    name: document.getElementById('register-name').value.trim(),
-                    email: document.getElementById('register-email').value.trim(),
-                    password: document.getElementById('register-password').value
-                }
-                : {
-                    email: document.getElementById('login-email').value.trim(),
-                    password: document.getElementById('login-password').value
-                };
-            const result = await window.UrbsAPI.request(
-                register ? 'auth/register.php' : 'auth/login.php',
-                { method: 'POST', body: payload }
-            );
-            entering = true;
-            form.reset();
-            if (status)
-                status.textContent = `Acesso confirmado. Iniciando a experiência URBS${result.user?.name ? ` para ${result.user.name}` : ''}.`;
-        } catch (apiError) {
-            error.textContent = apiError.message || 'Não foi possível entrar. Tente novamente.';
-            if (button) {
-                button.disabled = false;
-                button.textContent = originalLabel;
-            }
-            document.querySelectorAll('.switch-link').forEach(item => item.disabled = false);
-            return;
-        }
-        root.classList.add('is-departing');
-        document.querySelectorAll('.submit-button,.switch-link').forEach(btn => btn.disabled = true);
-        const beginFlight = () => {
-            if (window.URBSGeoDescent)
-                window.URBSGeoDescent.start();
-            else {
-                const overlay = document.querySelector('.arrival-overlay');
-                overlay.style.display = 'flex';
-                overlay.style.opacity = '1';
-                setTimeout(() => location.assign('index.html'), 1500);
-            }
-        };
-        // Primeiro desaparecem formulário e cabeçalho; só então aparece o Cesium.
-        const elements = [...document.querySelectorAll('.form-side:not([aria-hidden="true"]),.topline,.bottomline')];
-        if (gsap && !reduced) {
-            gsap.to(elements, { autoAlpha: 0, y: -20, duration: .55, stagger: .035, ease: 'power2.inOut', onComplete: beginFlight });
-        }
-        else {
-            elements.forEach(el => el.style.visibility = 'hidden');
-            beginFlight();
-        }
+
+    const activePane = openRegisterDirectly ? registerSide : loginSide;
+    const inactivePane = openRegisterDirectly ? loginSide : registerSide;
+
+    if (!gsap || reduced) {
+      camera.position.z = targetZ;
+      earthGroup.position.x = targetX;
+      inactivePane.style.visibility = 'hidden';
+      inactivePane.style.opacity = '0';
+      activePane.style.visibility = 'visible';
+      activePane.style.opacity = '1';
+      return;
     }
-    document.getElementById('login-form')?.addEventListener('submit', enterExperience);
-    document.getElementById('register-form')?.addEventListener('submit', enterExperience);
-    initGlobe();
+
+    gsap.set(inactivePane, { autoAlpha: 0 });
+    gsap.set(activePane, { autoAlpha: 0, y: 18 });
+
+    const tl = gsap.timeline();
+    tl.to(camera.position, { z: targetZ, duration: 2.3, ease: 'power3.out' }, 0)
+      .to(earthGroup.rotation, { y: earthGroup.rotation.y + 0.28, duration: 2.3, ease: 'power2.out' }, 0)
+      .to(earthGroup.position, { x: targetX, duration: 1.5, ease: 'power3.inOut' }, 0.45)
+      .to(activePane, { autoAlpha: 1, y: 0, duration: 0.9, ease: 'power3.out' }, 1.05);
+  }
+
+  function switchMode(next) {
+    if (diving || switching || next === mode) return;
+    const toRegister = next === 'register';
+    const outgoing = toRegister ? loginSide : registerSide;
+    const incoming = toRegister ? registerSide : loginSide;
+
+    mode = next;
+    stage.dataset.mode = next;
+    outgoing.inert = true;
+    outgoing.setAttribute('aria-hidden', 'true');
+    incoming.inert = false;
+    incoming.removeAttribute('aria-hidden');
+
+    const destX = toRegister ? earthOffsetX() : -earthOffsetX();
+    const spinDelta = toRegister ? Math.PI * 1.25 : -Math.PI * 1.25;
+
+    if (!gsap || reduced) {
+      earthGroup.position.x = destX;
+      earthGroup.rotation.y += spinDelta;
+      outgoing.style.visibility = 'hidden';
+      outgoing.style.opacity = '0';
+      incoming.style.visibility = 'visible';
+      incoming.style.opacity = '1';
+      return;
+    }
+
+    switching = true;
+    gsap.killTweensOf([outgoing, incoming, earthGroup.position, earthGroup.rotation]);
+
+    const tl = gsap.timeline({
+      onComplete: () => { switching = false; }
+    });
+
+    tl.to(outgoing, { autoAlpha: 0, x: toRegister ? 44 : -44, duration: 0.38, ease: 'power2.in' }, 0)
+      .to(earthGroup.position, { x: destX, duration: 1.15, ease: 'power3.inOut' }, 0.08)
+      .to(earthGroup.rotation, { y: earthGroup.rotation.y + spinDelta, duration: 1.15, ease: 'power3.inOut' }, 0.08)
+      .fromTo(incoming, { autoAlpha: 0, x: toRegister ? -44 : 44 }, { autoAlpha: 1, x: 0, duration: 0.68, ease: 'power3.out' }, 0.56);
+  }
+
+  // Mergulho Cinematográfico em 3 estágios: Alinhamento -> Aceleração Orbital + FOV Warp -> Entrada na Atmosfera
+  function diveIntoMontesClaros() {
+    diving = true;
+    autoRotate = false;
+    velocity = { x: 0, y: 0 };
+
+    const mocVec = latLonToVec3(MOC_LAT, MOC_LON, 1);
+    const targetRotYBase = -Math.atan2(mocVec.x, mocVec.z);
+    const zAfterY = Math.hypot(mocVec.x, mocVec.z);
+    const targetRotX = Math.atan2(mocVec.y, zAfterY);
+
+    const twoPi = Math.PI * 2;
+    let deltaY = ((targetRotYBase - earthGroup.rotation.y) % twoPi + twoPi) % twoPi;
+    if (deltaY > Math.PI) deltaY -= twoPi;
+    const finalRotY = earthGroup.rotation.y + deltaY;
+
+    const finishToMap = () => {
+      try { sessionStorage.setItem('urbs-arrival-v8', String(Date.now())); } catch (_) {}
+      window.location.assign('mapa.html');
+    };
+
+    if (!gsap || reduced) {
+      finishToMap();
+      return;
+    }
+
+    const uiChrome = ['.auth-header', '.auth-footer', '#login-side', '#register-side'];
+    const telemetry = { km: 12400, warp: 0 };
+    diveHud.hidden = false;
+
+    const tl = gsap.timeline();
+
+    // Estágio 1: Limpa a tela e alinha Montes Claros no centro exato da lente
+    tl.to(uiChrome, { autoAlpha: 0, y: -12, duration: 0.45, stagger: 0.03, ease: 'power2.in' }, 0)
+      .fromTo(diveHud, { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: 0.5, ease: 'power2.out' }, 0.25)
+      .to(earthGroup.scale, { x: 1, y: 1, z: 1, duration: 0.5 }, 0)
+      .to(earthGroup.position, { x: 0, y: 0, duration: 1.05, ease: 'power3.inOut' }, 0.08)
+      .to(earthGroup.rotation, { x: targetRotX, y: finalRotY, z: 0.08, duration: 1.15, ease: 'power3.inOut' }, 0.08)
+
+      // Estágio 2: Aproximação com abertura gradual de lente (FOV Warp) e aceleração das estrelas
+      .to(camera.position, { z: 2.35, duration: 0.85, ease: 'power2.inOut' }, 0.7)
+      .to(telemetry, {
+        km: 1800,
+        warp: 14,
+        duration: 0.85,
+        ease: 'power2.in',
+        onUpdate: () => {
+          diveWarpSpeed = telemetry.warp;
+          if (diveAlt) diveAlt.textContent = `ALTITUDE · ${Math.round(telemetry.km).toLocaleString('pt-BR')} KM`;
+        }
+      }, 0.7)
+
+      // Estágio 3: Mergulho final atravessando a camada de nuvens até Montes Claros
+      .add(() => {
+        if (divePhase) divePhase.textContent = 'ENTRANDO NA ATMOSFERA';
+      }, 1.45)
+      .to(camera.position, { z: 1.545, duration: 1.15, ease: 'expo.in' }, 1.45)
+      .to(camera, {
+        fov: 68,
+        duration: 1.15,
+        ease: 'expo.in',
+        onUpdate: () => camera.updateProjectionMatrix()
+      }, 1.45)
+      .to(cloudsMat.uniforms.uOpacity, { value: 0.92, duration: 0.85, ease: 'power2.in' }, 1.65)
+      .to(telemetry, {
+        km: 12,
+        warp: 46,
+        duration: 1.1,
+        ease: 'expo.in',
+        onUpdate: () => {
+          diveWarpSpeed = telemetry.warp;
+          if (diveAlt) diveAlt.textContent = `ALTITUDE · ${Math.round(telemetry.km).toLocaleString('pt-BR')} KM`;
+        }
+      }, 1.45)
+      .to(diveHud, { autoAlpha: 0, duration: 0.3 }, 2.25)
+      .add(() => {
+        diveVeil.style.opacity = '1';
+      }, 2.22)
+      .add(finishToMap, 2.75);
+  }
+
+  // ================= EVENTOS DE INTERFACE & API PHP =================
+  document.querySelectorAll('[data-switch]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.switch;
+      switchMode(next);
+      window.setTimeout(() => {
+        document.getElementById(next === 'login' ? 'login-email' : 'register-name')?.focus({ preventScroll: true });
+      }, reduced ? 0 : 1100);
+    });
+  });
+
+  document.getElementById('urbs-brand-link')?.addEventListener('click', (event) => {
+    if (mode === 'register') {
+      event.preventDefault();
+      switchMode('login');
+    }
+  });
+
+  document.querySelectorAll('.toggle-pass').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.textContent = show ? 'Ocultar' : (btn.dataset.target === 'login-password' ? 'Mostrar' : 'Ver');
+    });
+  });
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (diving) return;
+
+    const form = event.currentTarget;
+    const isRegister = form.id === 'register-form';
+    const errorEl = form.querySelector('.field-error');
+    errorEl.textContent = '';
+
+    if (!form.checkValidity()) {
+      const invalid = form.querySelector(':invalid');
+      errorEl.textContent = invalid?.validity.typeMismatch
+        ? 'Informe um endereço de e-mail válido.'
+        : invalid?.validity.tooShort
+          ? 'A senha precisa ter o mínimo de caracteres exigido.'
+          : 'Preencha todos os campos obrigatórios.';
+      invalid?.focus();
+      return;
+    }
+
+    if (isRegister) {
+      const pass = document.getElementById('register-password');
+      const confirm = document.getElementById('register-confirm');
+      if (pass.value !== confirm.value) {
+        errorEl.textContent = 'As senhas digitadas não coincidem.';
+        confirm.focus();
+        return;
+      }
+    }
+
+    const submitBtn = form.querySelector('.btn-submit');
+    const originalHtml = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span>${isRegister ? 'Criando cadastro…' : 'Entrando…'}</span>`;
+
+    try {
+      if (!window.UrbsAPI) throw new Error('Conexão com o servidor indisponível.');
+
+      const emailVal = document.getElementById(isRegister ? 'register-email' : 'login-email').value.trim();
+      const payload = isRegister
+        ? {
+            name: document.getElementById('register-name').value.trim(),
+            email: emailVal,
+            password: document.getElementById('register-password').value
+          }
+        : {
+            email: emailVal,
+            password: document.getElementById('login-password').value
+          };
+
+      const result = await window.UrbsAPI.request(
+        isRegister ? 'auth/register.php' : 'auth/login.php',
+        { method: 'POST', body: payload }
+      );
+
+      if (isRegister) {
+        form.reset();
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalHtml;
+
+        if (result.user) saveAccount(result.user, emailVal);
+        renderSavedAccounts();
+
+        const loginEmail = document.getElementById('login-email');
+        if (loginEmail) loginEmail.value = emailVal;
+
+        showToast('Cadastro criado com sucesso! Faça login para entrar.');
+        switchMode('login');
+        window.setTimeout(() => document.getElementById('login-password')?.focus({ preventScroll: true }), reduced ? 0 : 1150);
+        return;
+      }
+
+      if (result.user) saveAccount(result.user, emailVal);
+      if (srStatus) srStatus.textContent = 'Acesso confirmado. Abrindo o mapa de Montes Claros.';
+      form.reset();
+      diveIntoMontesClaros();
+    } catch (apiErr) {
+      errorEl.textContent = apiErr.message || 'Não foi possível concluir a operação.';
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalHtml;
+    }
+  }
+
+  document.getElementById('login-form')?.addEventListener('submit', handleSubmit);
+  document.getElementById('register-form')?.addEventListener('submit', handleSubmit);
+
+  // ================= INICIALIZAÇÃO =================
+  initEarth3D();
+  renderSavedAccounts();
+
+  const params = new URLSearchParams(window.location.search);
+  const startInRegister = params.get('modo') === 'cadastro';
+  playInitialArrival(startInRegister);
+
+  if (params.get('acesso') === 'restrito') {
+    showToast('Entre na sua conta ou cadastre-se para acessar o mapa e registrar ocorrências.');
+  } else if (params.get('trocar') === '1') {
+    showToast('Selecione uma conta recente ou informe outro e-mail para alternar.');
+  }
 })();
