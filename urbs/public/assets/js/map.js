@@ -432,6 +432,11 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    const initialCategory = new URLSearchParams(window.location.search).get("categoria");
+    if (initialCategory && categoryFilter && [...categoryFilter.options].some((o) => o.value === initialCategory)) {
+        categoryFilter.value = initialCategory;
+    }
+    
     render();
     data.load().then(({ error }) => {
         render();
