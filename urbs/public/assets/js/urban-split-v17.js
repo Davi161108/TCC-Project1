@@ -84,8 +84,10 @@
 
     panels.forEach((el) => {
       const active = el === panel;
+      const trigger = el.querySelector('.split-panel__collapsed');
       el.classList.toggle('is-active', active);
-      el.setAttribute('aria-expanded', String(active));
+      trigger?.setAttribute('aria-expanded', String(active));
+
       const body = el.querySelector('.split-panel__content');
       if (body) body.inert = !active;
       el.querySelectorAll('.split-panel__story-button, .split-panel__action').forEach((btn) => {
@@ -93,7 +95,9 @@
       });
     });
 
-    if (focus) panel.focus({ preventScroll: true });
+    if (focus) {
+      panel.querySelector('.split-panel__collapsed')?.focus({ preventScroll: true });
+    }
   }
 
   function fillModal(panel) {
@@ -171,6 +175,8 @@
   }
 
   panels.forEach((panel, index) => {
+    const trigger = panel.querySelector('.split-panel__collapsed');
+
     if (finePointer) {
       panel.addEventListener('pointerenter', () => {
         if (!modalOpen) select(panel);
@@ -184,24 +190,21 @@
         openStory(panel, storyBtn);
         return;
       }
+      const clickedTrigger = Boolean(event.target.closest('.split-panel__collapsed'));
       const wasActive = panel.classList.contains('is-active');
       select(panel, { lock: true });
-      // No desktop com mouse, clicar na faixa já aberta abre o dossiê; no mobile usa-se o botão explícito
-      if (wasActive && finePointer) openStory(panel, panel);
+      if (wasActive && finePointer && !clickedTrigger) {
+        openStory(panel, panel.querySelector('.split-panel__story-button'));
+      }
     });
 
-    panel.addEventListener('focus', (event) => {
-      if (event.target === panel && !modalOpen) select(panel, { lock: true });
+    trigger?.addEventListener('focus', () => {
+      if (!modalOpen) select(panel, { lock: true });
     });
 
-    panel.addEventListener('keydown', (event) => {
-      if (event.target !== panel || modalOpen) return;
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        const active = panel.classList.contains('is-active');
-        select(panel, { lock: true });
-        if (active) openStory(panel, panel);
-      } else if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    trigger?.addEventListener('keydown', (event) => {
+      if (modalOpen) return;
+      if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         event.preventDefault();
         const nextIdx =
           event.key === 'Home'

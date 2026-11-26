@@ -751,3 +751,33 @@ html.urbs-modal-open body {
     display: none;
   }
 }
+
+/* ================= SEMÂNTICA DO BOTÃO & CONTRASTE WCAG AA ================= */
+button.split-panel__collapsed {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+  text-align: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.split-panel.is-active button.split-panel__collapsed {
+  pointer-events: none;
+}
+
+.split-panel:has(.split-panel__collapsed:focus-visible) {
+  outline: 2px solid var(--panel-accent);
+  outline-offset: -4px;
+}
+
+.urban-split__footer {
+  color: #b1cbb6;
+}
+
+.urban-split__note {
+  color: #a1baa7;
+}

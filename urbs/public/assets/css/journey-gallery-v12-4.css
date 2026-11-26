@@ -454,3 +454,42 @@
     transform: none !important;
   }
 }
+
+/* ================= BOTÃO PAUSAR / RETOMAR (WCAG 2.2.2) ================= */
+.journey-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.journey-toggle-play {
+  height: 42px;
+  padding: 0 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 39, 28, 0.28);
+  background: transparent;
+  color: #0b1e14;
+  font: 600 10px/1 'DM Mono', monospace;
+  letter-spacing: 0.1em;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.journey-toggle-play:hover,
+.journey-toggle-play[aria-pressed="true"] {
+  background: #0b1e14;
+  border-color: #0b1e14;
+  color: #c7f36b;
+}
+
+.journey-gallery.is-paused .journey-reel-caption i {
+  background: #8a998c;
+  box-shadow: none;
+}
+
+@media (max-width: 560px) {
+  .journey-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

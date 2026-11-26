@@ -4,6 +4,8 @@
 
   const viewport = document.getElementById('journey-reel');
   const track = viewport?.querySelector('.journey-reel-track');
+  const section = document.getElementById('funcionamento');
+  const togglePlayBtn = document.getElementById('journey-toggle-play');
   if (!viewport || !track) return;
 
   const originals = [...track.querySelectorAll('.journey-reel-card')];
@@ -28,6 +30,7 @@
   let oldTime = 0;
   let raf = 0;
   let isVisible = true;
+  let manualPaused = false;
   let dragging = false;
   let touching = false;
   let pauseUntil = 0;
@@ -59,6 +62,7 @@
 
     const paused =
       reduce ||
+      manualPaused ||
       !isVisible ||
       document.hidden ||
       dragging ||
@@ -144,6 +148,18 @@
     viewport.scrollTo({ left: target, behavior: reduce ? 'auto' : 'smooth' });
     pauseUntil = performance.now() + 2400;
   };
+
+  togglePlayBtn?.addEventListener('click', () => {
+    manualPaused = !manualPaused;
+    togglePlayBtn.setAttribute('aria-pressed', String(manualPaused));
+    togglePlayBtn.textContent = manualPaused ? 'RETOMAR' : 'PAUSAR';
+    togglePlayBtn.setAttribute(
+      'aria-label',
+      manualPaused ? 'Retomar movimento automático' : 'Pausar movimento automático'
+    );
+    section?.classList.toggle('is-paused', manualPaused);
+    oldTime = 0;
+  });
 
   document.getElementById('journey-prev')?.addEventListener('click', () => stepCard(-1));
   document.getElementById('journey-next')?.addEventListener('click', () => stepCard(1));

@@ -1,38 +1,197 @@
-/* URBS — Navegação da Home, carrossel infinito full-bleed com inércia/skew e tipografia cinética */
+/* URBS — Navegação Editorial (Cortina Full-Screen + Scroll-Spy), Carrossel Full-Bleed e Tipografia Cinética */
 (() => {
   'use strict';
 
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // 1. Menu mobile
-  const menu = document.querySelector('.menu-toggle');
-  const nav = document.querySelector('.nav');
-  menu?.addEventListener('click', () => {
-    const open = nav.classList.toggle('is-open');
-    menu.setAttribute('aria-expanded', String(open));
-    menu.setAttribute('aria-label', open ? 'Fechar menu' : 'Abrir menu');
-  });
-  nav?.querySelectorAll('a').forEach((link) => {
-    link.addEventListener('click', () => {
-      nav.classList.remove('is-open');
-      menu?.setAttribute('aria-expanded', 'false');
-    });
-  });
+  // 1. Cortina Editorial Full-Screen (Desktop via Pílula + Mobile via Hambúrguer)
+  initEditorialCurtain();
+  function initEditorialCurtain() {
+    const curtain = document.getElementById('urbs-curtain');
+    if (!curtain) return;
 
-  // 2. Barra de progresso de leitura no topo
-  const bar = document.querySelector('.progress span');
-  let scheduled = false;
-  const onScroll = () => {
-    if (scheduled) return;
-    scheduled = true;
-    requestAnimationFrame(() => {
+    const shell = curtain.querySelector('.urbs-curtain__shell');
+    const toggles = [...document.querySelectorAll('[data-curtain-toggle]')];
+    const closers = [...curtain.querySelectorAll('[data-curtain-close]')];
+    const anchorLinks = [...document.querySelectorAll('.nav a[href^="#"], .urbs-curtain__link[href^="#"]')];
+
+    let isOpen = false;
+    let lastTrigger = null;
+    let closeTimer = 0;
+
+    const syncAria = (open) => {
+      toggles.forEach((btn) => {
+        btn.setAttribute('aria-expanded', String(open));
+        btn.classList.toggle('is-open', open);
+      });
+    };
+
+    const openCurtain = (trigger) => {
+      if (isOpen) return;
+      clearTimeout(closeTimer);
+      isOpen = true;
+      lastTrigger = trigger || null;
+      curtain.hidden = false;
+      curtain.setAttribute('aria-hidden', 'false');
+      document.documentElement.classList.add('urbs-curtain-open');
+      syncAria(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          curtain.classList.add('is-open');
+          shell?.focus({ preventScroll: true });
+        });
+      });
+    };
+
+    const closeCurtain = ({ restoreFocus = true } = {}) => {
+      if (!isOpen) return;
+      isOpen = false;
+      curtain.classList.remove('is-open');
+      curtain.setAttribute('aria-hidden', 'true');
+      document.documentElement.classList.remove('urbs-curtain-open');
+      syncAria(false);
+      closeTimer = window.setTimeout(() => {
+        if (!isOpen) curtain.hidden = true;
+      }, reduced ? 0 : 620);
+      if (restoreFocus && lastTrigger?.isConnected) {
+        lastTrigger.focus({ preventScroll: true });
+      }
+    };
+
+    toggles.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (isOpen) closeCurtain();
+        else openCurtain(btn);
+      });
+    });
+
+    closers.forEach((btn) => {
+      btn.addEventListener('click', () => closeCurtain());
+    });
+
+    // Chegada limpa nas seções + pulso sutil no cabeçalho da seção escolhida
+    const pulseSection = (target) => {
+      if (!target || reduced) return;
+      target.classList.remove('urbs-section-pulse');
+      void target.offsetWidth;
+      target.classList.add('urbs-section-pulse');
+      window.setTimeout(() => target.classList.remove('urbs-section-pulse'), 1150);
+    };
+
+    anchorLinks.forEach((link) => {
+      link.addEventListener('click', (event) => {
+        const href = link.getAttribute('href');
+        if (!href || !href.startsWith('#')) return;
+        const target = document.querySelector(href);
+        if (!target) return;
+
+        event.preventDefault();
+        const fromCurtain = Boolean(link.closest('#urbs-curtain'));
+        if (fromCurtain) closeCurtain({ restoreFocus: false });
+
+        const scrollNow = () => {
+          target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+          pulseSection(target);
+        };
+
+        if (fromCurtain && !reduced) {
+          window.setTimeout(scrollNow, 220);
+        } else {
+          scrollNow();
+        }
+      });
+    });
+
+    // Teclado: ESC fecha + Focus Trap dentro da cortina
+    document.addEventListener('keydown', (event) => {
+      if (!isOpen) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCurtain();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...curtain.querySelectorAll('a[href], button:not([disabled])')].filter(
+        (el) => el.getClientRects().length
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  // 2. Barra de progresso + Scroll-Spy ao vivo (Navbar, Cortina e Pílula Flutuante)
+  initScrollSpy();
+  function initScrollSpy() {
+    const bar = document.querySelector('.progress span');
+    const pillLabel = document.getElementById('urbs-pill-label');
+    const trackedLinks = [...document.querySelectorAll('[data-section]')];
+
+    const sections = [
+      { id: 'topo', el: document.getElementById('topo'), label: '00 · INÍCIO' },
+      { id: 'manifesto', el: document.getElementById('manifesto'), label: '01 · MANIFESTO' },
+      { id: 'experiencia', el: document.getElementById('experiencia'), label: '02 · TRANSFORMAÇÕES' },
+      { id: 'categorias', el: document.getElementById('categorias'), label: '03 · CATEGORIAS' },
+      { id: 'territorio', el: document.getElementById('territorio'), label: '04 · TERRITÓRIO' },
+      { id: 'funcionamento', el: document.getElementById('funcionamento'), label: '05 · FLUXO' },
+      { id: 'participar', el: document.querySelector('.final-cta'), label: '06 · PARTICIPE' },
+    ].filter((item) => item.el);
+
+    let currentId = '';
+    let labelSwapTimer = 0;
+    let scheduled = false;
+
+    const setActiveSection = (sectionObj) => {
+      if (!sectionObj || sectionObj.id === currentId) return;
+      currentId = sectionObj.id;
+
+      trackedLinks.forEach((link) => {
+        link.classList.toggle('is-active', link.dataset.section === currentId);
+      });
+
+      if (pillLabel && pillLabel.textContent !== sectionObj.label) {
+        clearTimeout(labelSwapTimer);
+        pillLabel.classList.add('is-changing');
+        labelSwapTimer = window.setTimeout(() => {
+          pillLabel.textContent = sectionObj.label;
+          pillLabel.classList.remove('is-changing');
+        }, reduced ? 0 : 150);
+      }
+    };
+
+    const update = () => {
+      scheduled = false;
       const max = document.documentElement.scrollHeight - innerHeight;
       if (bar) bar.style.transform = `scaleX(${Math.max(0, Math.min(1, max ? scrollY / max : 0))})`;
-      scheduled = false;
-    });
-  };
-  addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+
+      // Linha de leitura em 36% da viewport identifica qual seção domina a tela
+      const pivot = innerHeight * 0.36;
+      let active = sections[0];
+      for (const sec of sections) {
+        if (sec.el.getBoundingClientRect().top <= pivot) {
+          active = sec;
+        }
+      }
+      setActiveSection(active);
+    };
+
+    const onScroll = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(update);
+    };
+
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', onScroll, { passive: true });
+    update();
+  }
 
   // 3. Carrossel Infinito Full-Bleed (#story-viewport) com inércia e inclinação física (skew)
   initStoryCarousel();
@@ -46,7 +205,6 @@
     const originals = [...track.querySelectorAll('.story-card')];
     if (originals.length < 2) return;
 
-    // Clona 2 conjuntos extras para preencher monitores ultrawide sem nunca aparecer vazio na esquerda ou direita
     for (let copy = 0; copy < 2; copy++) {
       originals.forEach((card) => {
         const clone = card.cloneNode(true);
@@ -56,7 +214,7 @@
       });
     }
 
-    const SPEED = 44; // px/s: fluxo contínuo elegante
+    const SPEED = 44;
     let period = 0;
     let offset = 0;
     let previous = 0;
@@ -73,7 +231,6 @@
     let moved = false;
     let pauseUntil = 0;
 
-    // Mantém sempre dentro do bloco central [period, 2 * period) para haver cards visíveis à esquerda e à direita
     const keepCentered = (val) => {
       if (!period) return 0;
       let v = val;
@@ -102,7 +259,6 @@
         if (dragging) {
           targetSkew = Math.max(-3.6, Math.min(3.6, inertia * -0.14));
         } else if (Math.abs(inertia) > 0.25) {
-          // Deslize suave por inércia após soltar o mouse
           offset = keepCentered(offset - inertia);
           viewport.scrollLeft = offset;
           targetSkew = Math.max(-3.2, Math.min(3.2, inertia * -0.11));
@@ -133,7 +289,6 @@
       frameId = requestAnimationFrame(tick);
     };
 
-    // Arraste com mouse + física de inércia
     viewport.addEventListener('pointerdown', (e) => {
       if (e.pointerType !== 'mouse' || e.button !== 0) return;
       dragging = true;
@@ -169,7 +324,6 @@
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
 
-    // Toque nativo no celular sem brigar com o loop
     viewport.addEventListener('touchstart', () => {
       touching = true;
       inertia = 0;
@@ -204,7 +358,6 @@
       }
     }, true);
 
-    // Botão Pausar / Retomar
     togglePlayBtn?.addEventListener('click', () => {
       manualPaused = !manualPaused;
       togglePlayBtn.setAttribute('aria-pressed', String(manualPaused));
@@ -214,7 +367,6 @@
       previous = 0;
     });
 
-    // Setas ← e → com deslocamento suave
     const stepCard = (direction) => {
       if (!period) return;
       const step = originals[0].offsetWidth + 20;
@@ -368,7 +520,6 @@
       });
     });
 
-    // Ao rolar até o título, 3 a 4 letras bem espaçadas dão um pulinho sutil indicando interatividade
     if ('IntersectionObserver' in window) {
       const teaseObserver = new IntersectionObserver(
         (entries) => {
@@ -391,7 +542,6 @@
             }
 
             chosen.forEach((letter, idx) => {
-              // Hero aguarda a entrada inicial; demais seções dão o pulinho logo ao aparecer
               const baseDelay = heading.id === 'hero-title' ? 0.95 : 0.22;
               hopLetter(letter, baseDelay + idx * 0.13, 0.85);
             });
@@ -403,4 +553,274 @@
       headings.forEach((h) => teaseObserver.observe(h));
     }
   }
+
+  // 7. Pacote C — Rótulo contextual flutuante no cursor (somente desktop com mouse)
+  initContextualCursor();
+  function initContextualCursor() {
+    if (reduced || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+
+    const pill = document.createElement('div');
+    pill.id = 'urbs-cursor-pill';
+    pill.className = 'urbs-cursor-pill';
+    pill.setAttribute('aria-hidden', 'true');
+    pill.innerHTML = '<span class="urbs-cursor-dot"></span><span class="urbs-cursor-text"></span>';
+    document.body.appendChild(pill);
+
+    const textEl = pill.querySelector('.urbs-cursor-text');
+
+    let targetX = -200;
+    let targetY = -200;
+    let curX = -200;
+    let curY = -200;
+    let lastClientX = -200;
+    let lastClientY = -200;
+    let visible = false;
+    let pressing = false;
+    let rafId = 0;
+    let scrollQueued = false;
+
+    const resolveContext = (el) => {
+      if (!el || !(el instanceof Element)) return null;
+
+      // Não compete com a cortina do menu ou modal de história abertos
+      if (
+        document.documentElement.classList.contains('urbs-curtain-open') ||
+        document.documentElement.classList.contains('urbs-modal-open')
+      ) {
+        return null;
+      }
+
+      if (el.closest('#urb-ba-viewer')) {
+        return { label: 'COMPARAR ‹ ›', accent: pressing };
+      }
+
+      const storyVp = el.closest('#story-viewport');
+      if (storyVp) {
+        if (storyVp.classList.contains('dragging')) return { label: 'ARRASTANDO', accent: true };
+        if (el.closest('.story-card')) return { label: 'REGISTRAR ↗', accent: false };
+        return { label: 'ARRASTAR ‹ ›', accent: false };
+      }
+
+      const splitPanel = el.closest('.split-panel');
+      if (splitPanel) {
+        if (el.closest('.split-panel__action, .split-panel__story-button')) return null;
+        return splitPanel.classList.contains('is-active')
+          ? { label: 'LER DOSSIÊ ↗', accent: false }
+          : { label: 'EXPANDIR +', accent: false };
+      }
+
+      const journeyReel = el.closest('#journey-reel');
+      if (journeyReel) {
+        if (journeyReel.classList.contains('is-dragging')) return { label: 'ARRASTANDO', accent: true };
+        if (el.closest('.journey-reel-card')) return { label: 'EXPLORAR ↗', accent: false };
+        return { label: 'ARRASTAR ‹ ›', accent: false };
+      }
+
+      if (el.closest('.ticker')) {
+        return { label: 'PAUSADO', accent: false };
+      }
+
+      return null;
+    };
+
+    const computePosition = (clientX, clientY) => {
+      const w = pill.offsetWidth || 126;
+      const h = pill.offsetHeight || 28;
+      let x = clientX + 18;
+      let y = clientY + 18;
+      if (x + w + 14 > window.innerWidth) x = clientX - w - 16;
+      if (y + h + 14 > window.innerHeight) y = clientY - h - 16;
+      return { x: Math.max(8, x), y: Math.max(8, y) };
+    };
+
+    const animate = () => {
+      curX += (targetX - curX) * 0.24;
+      curY += (targetY - curY) * 0.24;
+      pill.style.transform = `translate3d(${curX.toFixed(1)}px, ${curY.toFixed(1)}px, 0)`;
+
+      const settled = Math.hypot(targetX - curX, targetY - curY) < 0.35;
+      if (!visible && settled) {
+        rafId = 0;
+        return;
+      }
+      rafId = requestAnimationFrame(animate);
+    };
+
+    const startLoop = () => {
+      if (!rafId) rafId = requestAnimationFrame(animate);
+    };
+
+    const applyContext = (ctx) => {
+      if (!ctx) {
+        if (visible) {
+          visible = false;
+          pill.classList.remove('is-visible', 'is-accent');
+        }
+        return;
+      }
+
+      if (textEl.textContent !== ctx.label) textEl.textContent = ctx.label;
+      pill.classList.toggle('is-accent', Boolean(ctx.accent));
+
+      const pos = computePosition(lastClientX, lastClientY);
+      if (!visible) {
+        curX = pos.x;
+        curY = pos.y;
+        visible = true;
+        pill.classList.add('is-visible');
+      }
+      targetX = pos.x;
+      targetY = pos.y;
+      startLoop();
+    };
+
+    window.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'mouse') return;
+      lastClientX = e.clientX;
+      lastClientY = e.clientY;
+      applyContext(resolveContext(e.target));
+    }, { passive: true });
+
+    window.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'mouse') return;
+      pressing = true;
+      applyContext(resolveContext(e.target));
+    }, { passive: true });
+
+    window.addEventListener('pointerup', (e) => {
+      pressing = false;
+      if (e.pointerType === 'mouse') applyContext(resolveContext(e.target));
+    }, { passive: true });
+
+    // Reavalia o elemento sob o cursor caso a página role com o mouse parado
+    window.addEventListener('scroll', () => {
+      if (!visible || scrollQueued) return;
+      scrollQueued = true;
+      requestAnimationFrame(() => {
+        scrollQueued = false;
+        const under = document.elementFromPoint(lastClientX, lastClientY);
+        applyContext(resolveContext(under));
+      });
+    }, { passive: true });
+
+    const hideAll = () => {
+      pressing = false;
+      applyContext(null);
+    };
+    document.documentElement.addEventListener('mouseleave', hideAll);
+    window.addEventListener('blur', hideAll);
+  }
+
+  // 8. Pacote C — Botões magnéticos com física suave (usa CSS `translate` sem conflitar com `:hover`)
+  initMagneticButtons();
+  function initMagneticButtons() {
+    if (reduced || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+
+    const groups = [
+      { selector: '.round-link', strength: 0.28, max: 11 },
+      { selector: '.nav-cta', strength: 0.18, max: 7 },
+      { selector: '.story-nav-buttons button, .journey-nav-buttons button', strength: 0.26, max: 8 },
+      { selector: '.cta-btn-primary, .cta-btn-secondary, .journey-gallery-cta', strength: 0.14, max: 7 },
+    ];
+
+    groups.forEach(({ selector, strength, max }) => {
+      document.querySelectorAll(selector).forEach((el) => {
+        let tx = 0;
+        let ty = 0;
+        let cx = 0;
+        let cy = 0;
+        let active = false;
+        let rafId = 0;
+
+        const clamp = (val) => Math.max(-max, Math.min(max, val));
+
+        const step = () => {
+          const ease = active ? 0.22 : 0.14;
+          cx += (tx - cx) * ease;
+          cy += (ty - cy) * ease;
+          el.style.translate = `${cx.toFixed(2)}px ${cy.toFixed(2)}px`;
+
+          if (!active && Math.hypot(cx, cy) < 0.08) {
+            el.style.translate = '';
+            rafId = 0;
+            return;
+          }
+          rafId = requestAnimationFrame(step);
+        };
+
+        const run = () => {
+          if (!rafId) rafId = requestAnimationFrame(step);
+        };
+
+        el.addEventListener('pointerenter', (e) => {
+          if (e.pointerType !== 'mouse') return;
+          active = true;
+          run();
+        });
+
+        el.addEventListener('pointermove', (e) => {
+          if (e.pointerType !== 'mouse') return;
+          const r = el.getBoundingClientRect();
+          tx = clamp((e.clientX - (r.left + r.width / 2)) * strength);
+          ty = clamp((e.clientY - (r.top + r.height / 2)) * strength);
+          run();
+        }, { passive: true });
+
+        el.addEventListener('pointerleave', () => {
+          active = false;
+          tx = 0;
+          ty = 0;
+          run();
+        });
+      });
+    });
+  }
+
+  // 9. Pacote C — Coreografia editorial de linhas e blocos no scroll
+  initScrollChoreography();
+  function initScrollChoreography() {
+    if (reduced || !('IntersectionObserver' in window)) return;
+
+    document.documentElement.classList.add('urbs-anim-ready');
+
+    // Linhas horizontais que se desenham da esquerda para a direita
+    const lines = [
+      ...document.querySelectorAll(
+        '.section-header .line, .urb-comparison__rule-line, .urban-split__line, .journey-rule-line, .cta-rule-line'
+      ),
+    ];
+
+    // Grupos de elementos com entrada escalonada (stagger)
+    const revealTargets = [];
+    const registerStagger = (selector, stepMs) => {
+      document.querySelectorAll(selector).forEach((el, idx) => {
+        el.setAttribute('data-urbs-reveal', '');
+        el.style.setProperty('--reveal-delay', `${idx * stepMs}ms`);
+        revealTargets.push(el);
+      });
+    };
+
+    registerStagger('.manifesto-right > *', 85);
+    registerStagger('.manifesto-pillars article', 110);
+    registerStagger('.impact-text p', 0);
+    registerStagger('.fineprint-right p', 95);
+    registerStagger('.fineprint-specs span', 75);
+    registerStagger('.footer-grid > div', 90);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting || entry.boundingClientRect.top < 0) {
+            entry.target.classList.add('is-revealed');
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.15, rootMargin: '0px 0px -40px 0px' }
+    );
+
+    lines.forEach((line) => observer.observe(line));
+    revealTargets.forEach((el) => observer.observe(el));
+  }
+  
 })();

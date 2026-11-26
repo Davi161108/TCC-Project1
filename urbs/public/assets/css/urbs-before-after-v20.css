@@ -732,3 +732,11 @@
     animation: none !important;
   }
 }
+
+/* Contraste WCAG AA nos textos micro do comparador */
+.urb-comparison__metrics-title,
+.urb-comparison__metric span,
+.urb-comparison__bottom,
+.urb-comparison__disclaimer {
+  color: #a4beaa;
+}
