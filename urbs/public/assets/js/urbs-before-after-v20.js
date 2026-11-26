@@ -1,4 +1,4 @@
-/* URBS — Comparador Antes / Depois com presets animados e ligação direta às categorias do sistema */
+/* URBS — Comparador Antes / Depois com dissolve real em camada dupla e pré-decodificação */
 (() => {
   'use strict';
 
@@ -86,11 +86,14 @@
   const stage = byId('urb-ba-dialog-stage');
   const openFullscreen = byId('urb-ba-open-fullscreen');
   const presetButtons = [...document.querySelectorAll('[data-urb-ba-preset]')];
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   let active = 0;
   let loadToken = 0;
   let animationTimeout = 0;
   let presetAnimTimeout = 0;
+  let ghostCleanupTimer = 0;
+  let initialized = false;
 
   const updateSplit = () => {
     viewer.style.setProperty('--urb-ba-split', `${Number(range.value)}%`);
@@ -107,14 +110,14 @@
 
   const setSplit = (position, animate = false) => {
     window.clearTimeout(presetAnimTimeout);
-    viewer.classList.toggle('is-preset-animating', animate);
+    viewer.classList.toggle('is-preset-animating', animate && !reducedMotion);
     range.value = String(position);
     updateSplit();
     syncPresets();
-    if (animate) {
+    if (animate && !reducedMotion) {
       presetAnimTimeout = window.setTimeout(() => {
         viewer.classList.remove('is-preset-animating');
-      }, 500);
+      }, 540);
     }
   };
 
@@ -143,16 +146,84 @@
     element.style.backgroundPosition = `center ${(start / (1 - height) * 100).toFixed(6)}%`;
   }
 
-  function setCase(index) {
-    active = (index + cases.length) % cases.length;
+  // Pré-carrega e decodifica na GPU para o crossfade começar sem engasgo
+  const preloadCache = new Map();
+  function preloadPhoto(url) {
+    if (preloadCache.has(url)) return preloadCache.get(url);
+    const promise = new Promise((resolve) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        if (typeof img.decode === 'function') {
+          img.decode().catch(() => {}).finally(() => resolve(true));
+        } else {
+          resolve(true);
+        }
+      };
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    preloadCache.set(url, promise);
+    return promise;
+  }
+  cases.forEach((item) => preloadPhoto(item.photo));
+
+  function clearGhosts() {
+    window.clearTimeout(ghostCleanupTimer);
+    viewer.querySelectorAll('.urb-comparison__photo--ghost').forEach((el) => el.remove());
+  }
+
+  function spawnCrossfadeGhost(element) {
+    if (!element.style.backgroundImage) return null;
+    const ghost = document.createElement('div');
+    ghost.className = `${element.className} urb-comparison__photo--ghost`;
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.style.backgroundImage = element.style.backgroundImage;
+    ghost.style.backgroundSize = element.style.backgroundSize;
+    ghost.style.backgroundPosition = element.style.backgroundPosition;
+    element.insertAdjacentElement('afterend', ghost);
+    return ghost;
+  }
+
+  async function setCase(index) {
+    const nextIndex = (index + cases.length) % cases.length;
+    if (initialized && nextIndex === active) return;
+
+    active = nextIndex;
     const item = cases[active];
+    const token = ++loadToken;
+    const isFirstLoad = !initialized;
+    initialized = true;
+
+    // Resposta visual imediata nas miniaturas e barra de progresso
+    [...thumbs.children].forEach((thumb, i) => {
+      thumb.classList.toggle('is-active', i === active);
+      thumb.setAttribute('aria-pressed', String(i === active));
+    });
+    byId('urb-ba-counter').textContent = `${String(active + 1).padStart(2, '0')} / ${String(cases.length).padStart(2, '0')}`;
+    byId('urb-ba-progress-fill').style.width = `${((active + 1) / cases.length) * 100}%`;
+
+    const ok = await preloadPhoto(item.photo);
+    if (token !== loadToken) return;
+
+    error.hidden = ok;
+
+    // Captura a foto anterior em camadas-fantasma para dissolver direto na nova (sem piscar)
+    clearGhosts();
+    let ghostAfter = null;
+    let ghostBefore = null;
+    if (!isFirstLoad && !reducedMotion) {
+      ghostAfter = spawnCrossfadeGhost(after);
+      ghostBefore = spawnCrossfadeGhost(before);
+    }
 
     byId('urb-ba-title').textContent = item.title;
     byId('urb-ba-category').textContent = item.category;
     byId('urb-ba-description').textContent = item.description;
     byId('urb-ba-location').textContent = item.location;
     byId('urb-ba-source').href = item.source;
-    byId('urb-ba-counter').textContent = `${String(active + 1).padStart(2, '0')} / ${String(cases.length).padStart(2, '0')}`;
+    byId('urb-ba-dialog-counter').textContent = byId('urb-ba-counter').textContent;
+    byId('urb-ba-dialog-title').textContent = item.title;
 
     if (reportCta) {
       reportCta.href = `registro.html?categoria=${encodeURIComponent(item.urbsCategory)}`;
@@ -165,39 +236,35 @@
 
     setPhoto(before, item, 'before');
     setPhoto(after, item, 'after');
+    after.setAttribute('aria-label', `Imagem posterior: ${item.title}.`);
 
-    window.clearTimeout(animationTimeout);
-    viewer.classList.remove('is-transitioning');
-    info?.classList.remove('is-transitioning');
-    void viewer.offsetWidth;
-    viewer.classList.add('is-transitioning');
-    info?.classList.add('is-transitioning');
-    animationTimeout = window.setTimeout(() => {
+    // Retorna o divisor suavemente ao centro ao trocar de exemplo
+    setSplit(50, !isFirstLoad);
+
+    if (!isFirstLoad && !reducedMotion) {
+      window.clearTimeout(animationTimeout);
       viewer.classList.remove('is-transitioning');
       info?.classList.remove('is-transitioning');
-    }, 460);
+      void viewer.offsetWidth;
+      viewer.classList.add('is-transitioning');
+      info?.classList.add('is-transitioning');
 
-    after.setAttribute('aria-label', `Imagem posterior: ${item.title}.`);
-    error.hidden = true;
-    setSplit(50, false);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          ghostAfter?.classList.add('is-fading-out');
+          ghostBefore?.classList.add('is-fading-out');
+        });
+      });
 
-    byId('urb-ba-progress-fill').style.width = `${((active + 1) / cases.length) * 100}%`;
-    byId('urb-ba-dialog-counter').textContent = byId('urb-ba-counter').textContent;
-    byId('urb-ba-dialog-title').textContent = item.title;
-
-    [...thumbs.children].forEach((thumb, i) => {
-      thumb.classList.toggle('is-active', i === active);
-      thumb.setAttribute('aria-pressed', String(i === active));
-    });
-
-    const token = ++loadToken;
-    const check = new Image();
-    check.onerror = () => {
-      if (token === loadToken) error.hidden = false;
-    };
-    check.src = item.photo;
+      ghostCleanupTimer = window.setTimeout(clearGhosts, 620);
+      animationTimeout = window.setTimeout(() => {
+        viewer.classList.remove('is-transitioning');
+        info?.classList.remove('is-transitioning');
+      }, 660);
+    }
   }
 
+  // Monta as 4 miniaturas antes da carga inicial
   cases.forEach((item, index) => {
     const button = document.createElement('button');
     button.type = 'button';

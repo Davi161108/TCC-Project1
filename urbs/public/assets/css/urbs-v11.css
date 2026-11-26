@@ -29,18 +29,6 @@ body::-webkit-scrollbar {
   height: 0;
 }
 
-html::-webkit-scrollbar-track {
-  background: #07140e;
-}
-
-html::-webkit-scrollbar-thumb {
-  background: #2c4f3b;
-  border-radius: 99px;
-}
-
-html::-webkit-scrollbar-thumb:hover {
-  background: var(--lime);
-}
 
 body {
   margin: 0;
@@ -632,6 +620,18 @@ html.urbs-logo-floating .header .logo:focus-visible {
   gap: clamp(32px, 6.5vw, 100px);
   align-items: end;
   padding-top: clamp(42px, 5vw, 68px);
+}
+
+.manifesto h2,
+.observations h2,
+.fineprint h2 {
+  font: 700 clamp(50px, 6.8vw, 114px)/0.94 'Space Grotesk', sans-serif;
+  letter-spacing: -0.08em;
+  margin: 0;
+}
+
+.manifesto h2 span {
+  color: #5f7f67;
 }
 
 .manifesto-right {
@@ -1738,10 +1738,6 @@ html.urbs-logo-floating .header .logo:focus-visible {
     display: none;
   }
 
-  .observations-head {
-    padding: 36px 22px 36px 0;
-  }
-
   .story-card {
     width: min(82vw, 460px);
     height: 460px;
@@ -1749,11 +1745,6 @@ html.urbs-logo-floating .header .logo:focus-visible {
 
   .final-cta {
     min-height: 600px;
-  }
-
-  .cta-orbit {
-    top: 10%;
-    opacity: 0.14;
   }
 
   .cta-bottom,
@@ -1880,12 +1871,9 @@ html.urbs-logo-floating .header .logo:focus-visible {
   }
 
   .ticker-track,
-  .scroll-cue b {
+  .scroll-cue b,
+  .cta-orbit {
     animation: none !important;
-
-    .cta-orbit {
-      display: none;
-    }
   }
 
   .hero-photo,

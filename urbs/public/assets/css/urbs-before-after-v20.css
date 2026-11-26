@@ -1,4 +1,4 @@
-/* URBS — Seção 2: Comparador Antes / Depois (Limpo, responsivo e fluido) */
+/* URBS — Seção 2: Comparador Antes / Depois com dissolve real (crossfade) */
 .urb-comparison {
   --lime: #c7f36b;
   --surface: #0b1811;
@@ -130,20 +130,33 @@
   pointer-events: none;
 }
 
-/* Animação suave somente ao clicar nos botões de atalho (arraste segue instantâneo) */
+/* Animação suave nos botões de atalho e no retorno do divisor */
 .urb-comparison__viewer.is-preset-animating .urb-comparison__before-mask {
-  transition: clip-path 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: clip-path 0.52s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .urb-comparison__viewer.is-preset-animating .urb-comparison__divider {
-  transition: left 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: left 0.52s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.urb-comparison__viewer.is-transitioning .urb-comparison__photo {
-  animation: urb-ba-reveal 0.42s cubic-bezier(0.22, 0.7, 0.2, 1) both;
+/* Dissolve direto de uma foto na outra (zero apagão ou flash) */
+.urb-comparison__photo--ghost {
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.58s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity;
 }
-@keyframes urb-ba-reveal {
-  from { opacity: 0.32; transform: scale(1.03); filter: blur(2px) saturate(0.88); }
-  to { opacity: 1; transform: scale(1); filter: blur(0) saturate(0.98); }
+
+.urb-comparison__photo--ghost.is-fading-out {
+  opacity: 0;
+}
+
+.urb-comparison__viewer.is-transitioning .urb-comparison__photo:not(.urb-comparison__photo--ghost) {
+  animation: urb-ba-settle 0.64s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes urb-ba-settle {
+  from { transform: scale(1.022); }
+  to { transform: scale(1); }
 }
 
 .urb-comparison__pill {
@@ -345,7 +358,7 @@
   height: 100%;
   width: 25%;
   background: var(--lime);
-  transition: width 0.35s ease;
+  transition: width 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .urb-comparison__thumbnails {
@@ -364,7 +377,7 @@
   overflow: hidden;
   background: #13251b;
   opacity: 0.62;
-  transition: opacity 0.22s, border-color 0.22s, transform 0.22s;
+  transition: opacity 0.24s, border-color 0.24s, transform 0.24s;
 }
 
 .urb-comparison__thumb::after {
@@ -375,7 +388,7 @@
   background: var(--lime);
   transform: scaleX(0);
   transform-origin: left;
-  transition: transform 0.32s ease;
+  transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .urb-comparison__thumb.is-active {
@@ -428,10 +441,10 @@
 }
 
 .urb-comparison__info.is-transitioning > :not(.urb-comparison__bottom) {
-  animation: urb-ba-copy 0.42s ease both;
+  animation: urb-ba-copy 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @keyframes urb-ba-copy {
-  from { opacity: 0.35; transform: translateY(8px); }
+  from { opacity: 0.45; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -707,6 +720,7 @@
 @media (prefers-reduced-motion: reduce) {
   .urb-comparison__viewer.is-preset-animating .urb-comparison__before-mask,
   .urb-comparison__viewer.is-preset-animating .urb-comparison__divider,
+  .urb-comparison__photo--ghost,
   .urb-comparison__thumb,
   .urb-comparison__thumb-photo,
   .urb-comparison__thumb::after,
